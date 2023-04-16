@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Programa Cujo Nome Estamos Legalmente Impedidos de Dizer</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="description" content="" />
+    <link rel="icon" href="favicon.png" />
+    <style>
+      body {
+        font-family: Iowan Old Style, Apple Garamond, Baskerville,
+          Times New Roman, Droid Serif, Times, Source Serif Pro, serif,
+          Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol;
+      }
+    </style>
+  </head>
+
+  <body>
+    <header>
+      <h1>Programa Cujo Nome Estamos Legalmente Impedidos de Dizer</h1>
+      <h3>
+        <i> (e.g., Governo Sombra -.-) </i>
+      </h3>
+    </header>
+    <p>
+      Isto são transcrições de todos os episódios do Governo Sombra. Feitos com
+      uma mistura de whisper.cpp para transcrever, e Rust para servir o site.
+      Enjoy.
+    </p>
+    <main>
+      <h2>Episódios:</h2>
+      {% for episode in episodes%}
+      <section>
+        <a href="/episodes/{{episode.number}}">{{episode.number}}</a>: {{
+        episode.title }}
+      </section>
+      {% endfor %}
+      <hr />
+    </main>
+    <footer>
+      Uma estupidez por
+      <a
+        href="https://duarteocarmo.com/?utm_source=governo_sombra"
+        target="_blank"
+        >Duarte O.Carmo</a
+      >
+    </footer>
+  </body>
+</html>

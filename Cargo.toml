@@ -3,7 +3,13 @@ name = "governosombra"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "process"
+path = "src/process.rs"
+
+[[bin]]
+name = "app"
+path = "src/main.rs"
 
 [dependencies]
 whisper-rs = "0.5.0"
@@ -12,4 +18,7 @@ reqwest = { version = "0.11", features = ["json"] }
 tokio = { version = "1.27.0", features = ["full"] }
 feed-rs = "1.3.0"
 futures = "0.3.28"
-chrono = "0.4.24"
+chrono = { version = "0.4.24", features = ["serde"] }
+actix-web = "4"
+tera = "1.18.1"
+serde = "1.0.160"
