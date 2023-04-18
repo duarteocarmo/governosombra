@@ -1,4 +1,4 @@
-.PHONY: prepare run
+.PHONY: prepare run format
 
 prepare:
 	./download-ggml-model.sh base
@@ -7,5 +7,5 @@ run:
 	./target/release/app
 
 format: 
-	rustfmt src/
+	rustfmt src/*
 
