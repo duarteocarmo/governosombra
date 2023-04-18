@@ -31,7 +31,7 @@
       <h2>Episódios:</h2>
       {% for episode in episodes%}
       <section>
-        <a href="/episodes/{{episode.number}}">{{episode.number}}</a>: {{
+        <a href="/episodes/{{episode.number}}">#{{episode.number}}</a>: {{
         episode.title }}
       </section>
       {% endfor %}

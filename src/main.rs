@@ -3,9 +3,16 @@ use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 mod process;
 use cronjob::CronJob;
 use env_logger::Env;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
 use tera::{Context, Tera};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Snippet {
+    timestamp: String,
+    text: String,
+}
 
 #[get("/")]
 async fn hello(templ: web::Data<Tera>) -> impl Responder {
@@ -28,9 +35,20 @@ async fn episode_pages(path: web::Path<i32>, templ: web::Data<Tera>) -> impl Res
     file.read_to_string(&mut transcript)
         .expect("Failed to read file");
 
+    let snippets: Vec<Snippet> = transcript
+        .lines()
+        .map(|line| {
+            let parts: Vec<&str> = line.splitn(2, ": ").collect();
+            Snippet {
+                timestamp: parts[0].to_string(),
+                text: parts[1].to_string(),
+            }
+        })
+        .collect();
+
     let mut context = Context::new();
     context.insert("episode", episode);
-    context.insert("transcript", &transcript);
+    context.insert("snippets", &snippets);
     let s = templ.render("episode.html", &context).unwrap();
 
     HttpResponse::Ok().body(s)
@@ -46,7 +64,7 @@ async fn main() -> std::io::Result<()> {
     // Updater
     let mut cron = CronJob::new("Test Cron", on_cron);
     cron.minutes("30");
-    cron.seconds("30");
+    cron.seconds("0");
     cron.offset(0);
     CronJob::start_job_threaded(cron);
 
@@ -63,7 +81,7 @@ async fn main() -> std::io::Result<()> {
             .service(hello)
             .service(episode_pages)
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("0.0.0.0", 8080))?
     .run()
     .await
 }
