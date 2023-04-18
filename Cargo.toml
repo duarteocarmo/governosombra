@@ -22,3 +22,5 @@ chrono = { version = "0.4.24", features = ["serde"] }
 actix-web = "4"
 tera = "1.18.1"
 serde = "1.0.160"
+cronjob = "0.4.17"
+env_logger = "0.10.0"
