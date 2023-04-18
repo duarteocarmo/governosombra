@@ -1,49 +1,46 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>Programa Cujo Nome Estamos Legalmente Impedidos de Dizer</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="description" content="" />
-    <link rel="icon" href="favicon.png" />
-    <style>
-      body {
-        font-family: Iowan Old Style, Apple Garamond, Baskerville,
-          Times New Roman, Droid Serif, Times, Source Serif Pro, serif,
-          Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol;
-      }
-    </style>
-  </head>
 
-  <body>
-    <header>
-      <h1>Programa Cujo Nome Estamos Legalmente Impedidos de Dizer</h1>
-      <h3>
-        <i> (e.g., Governo Sombra) </i>
-      </h3>
-    </header>
-    <p>
-      Transcrições de todos os episódios do Governo Sombra. Feitos com
-      uma mistura de whisper.cpp para transcrever, e Rust para servir o site.
-      Enjoy.
-    </p>
-    <main>
-      <h2>Episódios:</h2>
-      {% for episode in episodes%}
-      <section>
-        <a href="/episodes/{{episode.number}}">#{{episode.number}}</a>: {{
+<head>
+  <meta charset="UTF-8" />
+  <title>Programa Cujo Nome Estamos Legalmente Impedidos de Dizer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="description" content="" />
+  <link rel="icon" href="favicon.png" />
+  <style>
+    body {
+
+      font-family: Iowan Old Style, Apple Garamond, Baskerville, Times New Roman, Droid Serif, Times, Source Serif Pro, serif, Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol;
+
+
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>Programa Cujo Nome Estamos Legalmente Impedidos de Dizer</h1>
+  </header>
+  <hr />
+  <p>
+    Transcrições dos episódios do podcast <a href="https://expresso.pt/podcasts/governo-sombra">Governo Sombra</a> (e.g,. Programa Cujo Nome Estamos Legalmente Impedidos de Dizer) <br>
+    Feitos com uma mistura de Rust 🦀, whisper.cpp, e amor. <br>
+    <a href="https://github.com/duarteocarmo/governosombra">GitHub</a>.<br>
+    Uma estupidez por
+    <a href="https://duarteocarmo.com/?utm_source=governo_sombra" target="_blank">Duarte O.Carmo</a>
+  </p>
+  <hr />
+  <main>
+    <img src="https://www.jpn.up.pt/wp-content/uploads/2022/05/governo-sombra.jpg" style="max-width: 50%"></img>
+    <h2>Episódios:</h2>
+    {% for episode in episodes%}
+    <section>
+      <a href="/episodes/{{episode.number}}">#{{episode.number}}</a>: {{
         episode.title }}
-      </section>
-      {% endfor %}
-      <hr />
-    </main>
-    <footer>
-      Uma estupidez por
-      <a
-        href="https://duarteocarmo.com/?utm_source=governo_sombra"
-        target="_blank"
-        >Duarte O.Carmo</a
-      >
-    </footer>
-  </body>
+    </section>
+    {% endfor %}
+    <hr />
+  </main>
+</body>
+
 </html>

@@ -1,1 +1,3 @@
-# Rust transcriber
+# Governo Sombra transcripts
+
+Built with Rust 🦀
