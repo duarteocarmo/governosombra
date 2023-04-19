@@ -1,46 +1,135 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+
+<html>
 
 <head>
-  <meta charset="UTF-8" />
   <title>Programa Cujo Nome Estamos Legalmente Impedidos de Dizer</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="description" content="" />
-  <link rel="icon" href="favicon.png" />
-  <style>
+
+  <meta name="description" content="Transcrições dos episódios do programa cujo nome estamos legalmente impedidos de dizer">
+  <meta name="author" content="Duarte Carmo">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+  <meta name="HandheldFriendly" content="true">
+
+
+  <style type="text/css">
+    body,
+    td,
+    th {
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
     body {
+      background-image: linear-gradient(white, white), url(https://i.scdn.co/image/ab6765630000ba8a2e1928ea286d731705a52136);
+      background-repeat: no-repeat;
+      background-size: 120px 120px;
+      background-attachment: fixed;
+      background-position: right top;
+      background-blend-mode: saturation;
+    }
 
-      font-family: Iowan Old Style, Apple Garamond, Baskerville, Times New Roman, Droid Serif, Times, Source Serif Pro, serif, Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol;
+    a.class1 {
+      color: #00F;
+      text-decoration: underline;
+      font-family: "Times New Roman", Times, serif;
+    }
+
+    a {
+      line-height: 80%;
+      color: #000;
+      top: -50px;
+    }
+
+    #projectlist {
+      position: absolute;
+      top: 110px;
+    }
+
+    #info {
+      font-size: 14px;
+    }
+
+    h2 {
+      font-size: 15px;
+    }
+
+    a:visited {
+      color: #00000;
+      list-style-type: none;
+    }
 
 
+    a:hover {
+      color: #30F;
+      text-decoration: underline;
+      font-family: "Times New Roman", Times, serif;
     }
   </style>
+
+  <meta charset="UTF-8">
+
+
+
 </head>
 
 <body>
-  <header>
-    <h1>Programa Cujo Nome Estamos Legalmente Impedidos de Dizer</h1>
-  </header>
-  <hr />
-  <p>
-    Transcrições dos episódios do podcast <a href="https://expresso.pt/podcasts/governo-sombra">Governo Sombra</a> (e.g,. Programa Cujo Nome Estamos Legalmente Impedidos de Dizer) <br>
-    Feitos com uma mistura de Rust 🦀, whisper.cpp, e amor. <br>
-    <a href="https://github.com/duarteocarmo/governosombra">GitHub</a>.<br>
-    Uma estupidez por
-    <a href="https://duarteocarmo.com/?utm_source=governo_sombra" target="_blank">Duarte O.Carmo</a>
-  </p>
-  <hr />
-  <main>
-    <img src="https://www.jpn.up.pt/wp-content/uploads/2022/05/governo-sombra.jpg" style="max-width: 50%"></img>
-    <h2>Episódios:</h2>
-    {% for episode in episodes%}
-    <section>
-      <a href="/episodes/{{episode.number}}">#{{episode.number}}</a>: {{
-        episode.title }}
-    </section>
+
+
+  <div id="site">
+    <p>
+      <li><a href="/" class="class1">lista de episodios</a> - <a href="#info" class="class1"> sobre </a></li>
+    <p>
+  </div>
+
+  <div id="projectlist">
+    <p><b>Programa cujo nome estamos legalmente impedidos de dizer</b></p>
+    {% for episode in episodes %}
+    <p>
+      <li><a href="/episodes/{{episode.number}}">#{{episode.number}}<em> - {{ episode.title }} </em></a></li>
+    </p>
     {% endfor %}
-    <hr />
-  </main>
+    <div id=info>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+
+      <p>Transcrições dos episódios do podcast <a href="https://expresso.pt/podcasts/governo-sombra">Governo Sombra</a></p>
+      <p>Feitos com uma mistura de Rust, whisper.cpp, e amor.</p>
+      <p>Uma estupidez por <a href="https://duarteocarmo.com/?utm_source=governo_sombra" target="_blank">Duarte O.Carmo</a></p>
+      <p><a href="https://github.com/duarteocarmo/governosombra">Source code</a></p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+    </div>
+  </div>
 </body>
 
 </html>

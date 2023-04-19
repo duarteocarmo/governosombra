@@ -1,56 +1,160 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+
+<html>
 
 <head>
-  <meta charset="UTF-8" />
   <title>Programa Cujo Nome Estamos Legalmente Impedidos de Dizer</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="description" content="" />
-  <style>
+
+  <meta name="description" content="Transcrições dos episódios do programa cujo nome estamos legalmente impedidos de dizer">
+  <meta name="author" content="Duarte Carmo">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+  <meta name="HandheldFriendly" content="true">
+
+
+  <style type="text/css">
+    body,
+    td,
+    th {
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
     body {
-      font-family: Iowan Old Style, Apple Garamond, Baskerville,
-        Times New Roman, Droid Serif, Times, Source Serif Pro, serif,
-        Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol;
+      background-image: linear-gradient(white, white), url(https://i.scdn.co/image/ab6765630000ba8a2e1928ea286d731705a52136);
+      background-repeat: no-repeat;
+      background-size: 120px 120px;
+      background-attachment: fixed;
+      background-position: right top;
+      background-blend-mode: saturation;
+    }
+
+    a.class1 {
+      color: #00F;
+      font-family: "Times New Roman", Times, serif;
+    }
+
+    a {
+      line-height: 80%;
+      color: #000;
+      top: -50px;
+    }
+
+    #projectlist {
+      position: absolute;
+      top: 110px;
+    }
+
+    #info {
+      font-size: 14px;
+    }
+
+    h2 {
+      font-size: 15px;
+    }
+
+
+
+    a:hover {
+      color: #30F;
+      text-decoration: underline;
+      font-family: "Times New Roman", Times, serif;
+    }
+
+    audio:hover,
+    audio:focus,
+    audio:active {
+      -webkit-box-shadow: 15px 15px 20px rgba(0, 0, 0, 0.4);
+      -moz-box-shadow: 15px 15px 20px rgba(0, 0, 0, 0.4);
+      box-shadow: 15px 15px 20px rgba(0, 0, 0, 0.4);
+      -webkit-transform: scale(1.05);
+      -moz-transform: scale(1.05);
+      transform: scale(1.05);
+    }
+
+
+    audio {
+      -webkit-transition: all 0.5s linear;
+      -moz-transition: all 0.5s linear;
+      -o-transition: all 0.5s linear;
+      transition: all 0.5s linear;
+      -moz-box-shadow: 2px 2px 4px 0px #006773;
+      -webkit-box-shadow: 2px 2px 4px 0px #006773;
+      box-shadow: 2px 2px 4px 0px #006773;
+      -moz-border-radius: 7px 7px 7px 7px;
+      -webkit-border-radius: 7px 7px 7px 7px;
+      border-radius: 7px 7px 7px 7px;
+      margin-bottom: 15px;
     }
   </style>
+
+  <meta charset="UTF-8">
+
+
+
 </head>
 
 <body>
-  <header>
-    <p><a href="/">Lista de episódios</a></p>
-    <h1>{{ episode.title }}</h1>
-  </header>
-  <main>
-    <div>
-      <a href="{{episode.url}}">
-        <img src="{{ episode.thumbnail_url }}" alt="Episode cover" style="height: 100px;">
-      </a>
-    </div>
-    <div>
-      <audio controls>
-        <source src="{{ episode.url }}" type="audio/mpeg">
-        Your browser does not support the audio element.
-      </audio>
-    </div>
+
+
+  <div id="site">
+    <p>
+      <li><a href="/" class="class1">lista de episodios</a> - <a href="#info" class="class1"> sobre </a></li>
+    <p>
+  </div>
+
+  <div id="projectlist">
+    <p><b>{{ episode.title }}</b></p>
+    <audio controls>
+      <source src="{{ episode.url }}" type="audio/mpeg">
+      Your browser does not support the audio element.
+    </audio>
     {% for snippet in snippets %}
     <div class="transcript">
-      <a href="#{{loop.index}}" id="{{loop.index}}">{{ snippet.timestamp }}</a> | {{ snippet.text }}
+      <a href="#{{loop.index}}" id="{{loop.index}}">{{ snippet.timestamp }}</a><em> - {{ snippet.text }}</em>
     </div>
     {% endfor %}
+    <div id=info>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
 
-
-    <div class="c">
-      <a class="l" href="#00:00:06.320" id="00:00:06.320">link</a> |
-      <div class="s"><a href="https://www.youtube.com/watch?v=3FIo6evmweo&amp;t=6">00:00:06.320</a></div>
-      <div class="t"> and a co creator of long short term memory networks.</div>
+      <p>Transcrições dos episódios do podcast <a href="https://expresso.pt/podcasts/governo-sombra">Governo Sombra</a></p>
+      <p>Feitos com uma mistura de Rust, whisper.cpp, e amor.</p>
+      <p>Uma estupidez por <a href="https://duarteocarmo.com/?utm_source=governo_sombra" target="_blank">Duarte O.Carmo</a></p>
+      <p><a href="https://github.com/duarteocarmo/governosombra">Source code</a></p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
+      <p>&nbsp;</p>
     </div>
-
-    <hr />
-  </main>
-  <footer>
-    Uma estupidez por
-    <a href="https://duarteocarmo.com/?utm_source=governo_sombra" target="_blank">Duarte O.Carmo</a>
-  </footer>
+  </div>
 </body>
 
 </html>
