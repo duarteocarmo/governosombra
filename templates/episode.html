@@ -115,8 +115,10 @@
       </audio>
       {% for snippet in snippets %}
       <div class="transcript">
-        <a href="#{{loop.index}}" id="{{loop.index}}">{{ snippet.timestamp }}</a
-        ><em> - {{ snippet.text }}</em>
+        <a href="#{{loop.index}}" id="{{loop.index}}"
+          >{{ snippet.timestamp }}</a
+        >
+        | <em>{{ snippet.text }}</em>
       </div>
       {% endfor %}
       <div id="info">
