@@ -118,7 +118,8 @@
         <a href="#{{loop.index}}" id="{{loop.index}}"
           >{{ snippet.timestamp }}</a
         >
-        | <em>{{ snippet.text }}</em>
+        |
+        <div style="display: inline-block"><em>{{ snippet.text }}</em></div>
       </div>
       {% endfor %}
       <div id="info">
