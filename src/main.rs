@@ -63,7 +63,7 @@ fn on_cron(name: &str) {
 async fn main() -> std::io::Result<()> {
     // Updater
     let mut cron = CronJob::new("Test Cron", on_cron);
-    cron.minutes("30");
+    cron.minutes("45");
     cron.seconds("0");
     cron.offset(0);
     CronJob::start_job_threaded(cron);
