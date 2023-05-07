@@ -194,7 +194,15 @@ fn get_transcript(episode: &Episode) -> Result<(), &'static str> {
     let num_segments = ctx.full_n_segments();
     for i in 0..num_segments {
         // Get the transcribed text and timestamps for the current segment.
-        let segment = ctx.full_get_segment_text(i).expect("failed to get segment");
+        // let segment = ctx.full_get_segment_text(i).expect("failed to get segment");
+        let segment = match ctx.full_get_segment_text(i) {
+            Ok(segment) => segment,
+            Err(_) => {
+                println!("Failed to get segment {}", i);
+                continue;
+            }
+        };
+
         let start_timestamp = ctx.full_get_segment_t0(i);
         let end_timestamp = ctx.full_get_segment_t1(i);
 
