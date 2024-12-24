@@ -4,9 +4,8 @@ mod process;
 use cronjob::CronJob;
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::Read;
 use tera::{Context, Tera};
+use crate::process::get_all_books;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snippet {
@@ -16,7 +15,12 @@ struct Snippet {
 
 #[get("/")]
 async fn hello(templ: web::Data<Tera>) -> impl Responder {
-    let episodes = process::get_episodes().await;
+    let episodes = process::get_episodes()
+        .await
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>();
+
     let mut context = Context::new();
     context.insert("episodes", &episodes);
     let s = templ.render("index.html", &context).unwrap();
@@ -29,11 +33,7 @@ async fn episode_pages(path: web::Path<i32>, templ: web::Data<Tera>) -> impl Res
     let episode_id = path.into_inner();
     let episodes = process::get_episodes().await;
     let episode = episodes.iter().find(|e| e.number == episode_id).unwrap();
-
-    let mut file = File::open(&episode.transcript_location).expect("Failed to open file");
-    let mut transcript = String::new();
-    file.read_to_string(&mut transcript)
-        .expect("Failed to read file");
+    let transcript = process::get_transcript_for(&episode).await.unwrap();
 
     let snippets: Vec<Snippet> = transcript
         .lines()
@@ -50,6 +50,21 @@ async fn episode_pages(path: web::Path<i32>, templ: web::Data<Tera>) -> impl Res
     context.insert("episode", episode);
     context.insert("snippets", &snippets);
     let s = templ.render("episode.html", &context).unwrap();
+
+    HttpResponse::Ok().body(s)
+}
+
+#[get("/livros")]
+async fn books(templ: web::Data<Tera>) -> impl Responder {
+    let s3_client = process::get_s3_client().await.unwrap();
+    let mut books = get_all_books(&s3_client).await.unwrap();
+    
+    // Sort books by episode number in descending order (most recent first)
+    books.sort_by(|a, b| b.episode_number.cmp(&a.episode_number));
+
+    let mut context = Context::new();
+    context.insert("books", &books);
+    let s = templ.render("books.html", &context).unwrap();
 
     HttpResponse::Ok().body(s)
 }
@@ -80,6 +95,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(tera))
             .service(hello)
             .service(episode_pages)
+            .service(books)
     })
     .bind(("0.0.0.0", 8080))?
     .run()
