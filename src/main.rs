@@ -93,8 +93,10 @@ async fn main() -> std::io::Result<()> {
                 ..Default::default()
             },
         ));
-        info!("PRODUCTION MODE, Sentry initialized");
+        info!("Sentry initialized");
     }
+
+    std::env::set_var("RUST_BACKTRACE", "1");
 
     // Updater
     let mut cron = CronJob::new("Test Cron", on_cron);
@@ -109,6 +111,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(Logger::default())
             .wrap(Logger::new("%a %{User-Agent}i"))
+            .wrap(sentry_actix::Sentry::new())
             .app_data(web::Data::new(tera))
             .service(hello)
             .service(episode_pages)
