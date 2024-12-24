@@ -1487,6 +1487,7 @@ dependencies = [
  "log",
  "reqwest 0.11.27",
  "sentry",
+ "sentry-actix",
  "serde",
  "serde_json",
  "tera",
@@ -2854,6 +2855,17 @@ dependencies = [
  "sentry-tracing",
  "tokio",
  "ureq",
+]
+
+[[package]]
+name = "sentry-actix"
+version = "0.35.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8c2610e32ab81cc376b6b4310101cff6636063b12f3f993884d0a8ec81c6187"
+dependencies = [
+ "actix-web",
+ "futures-util",
+ "sentry-core",
 ]
 
 [[package]]

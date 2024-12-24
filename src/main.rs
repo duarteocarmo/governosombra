@@ -1,11 +1,12 @@
 use actix_web::middleware::Logger;
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 mod process;
+use crate::process::get_all_books;
 use cronjob::CronJob;
 use env_logger::Env;
+use log::info;
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
-use crate::process::get_all_books;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snippet {
@@ -58,7 +59,7 @@ async fn episode_pages(path: web::Path<i32>, templ: web::Data<Tera>) -> impl Res
 async fn books(templ: web::Data<Tera>) -> impl Responder {
     let s3_client = process::get_s3_client().await.unwrap();
     let mut books = get_all_books(&s3_client).await.unwrap();
-    
+
     // Sort books by episode number in descending order (most recent first)
     books.sort_by(|a, b| b.episode_number.cmp(&a.episode_number));
 
@@ -76,15 +77,31 @@ fn on_cron(name: &str) {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // Log requests
+    env_logger::init_from_env(Env::default().default_filter_or("info"));
+
+    let debug = std::env::var("DEBUG")
+        .unwrap_or("false".to_string())
+        .to_lowercase();
+
+    if debug != "true" {
+        let sentry_dsn = std::env::var("SENTRY_DSN").unwrap();
+        let _guard = sentry::init((
+            sentry_dsn,
+            sentry::ClientOptions {
+                release: sentry::release_name!(),
+                ..Default::default()
+            },
+        ));
+        info!("PRODUCTION MODE, Sentry initialized");
+    }
+
     // Updater
     let mut cron = CronJob::new("Test Cron", on_cron);
     cron.minutes("40");
     cron.seconds("0");
     cron.offset(0);
     CronJob::start_job_threaded(cron);
-
-    // Log requests
-    env_logger::init_from_env(Env::default().default_filter_or("info"));
 
     HttpServer::new(|| {
         let tera = Tera::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/**/*")).unwrap();
