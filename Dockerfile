@@ -1,6 +1,6 @@
 FROM rust:latest as builder
 
-RUN apt-get update && apt-get install -y clang libssl-dev ffmpeg
+RUN apt-get update && apt-get install -y clang libssl-dev ffmpeg cmake
 
 WORKDIR /usr/src/governosombra
 COPY Cargo.toml Cargo.lock ./
