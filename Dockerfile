@@ -29,8 +29,8 @@ RUN cargo build --release
 COPY download-ggml-model.sh ./download-ggml-model.sh
 RUN ./download-ggml-model.sh base
 
-# Runtime stage - minimal image
-FROM debian:bookworm-slim AS runtime
+# Runtime stage - same debian as rust:latest uses
+FROM debian:trixie-slim AS runtime
 RUN apt-get update && apt-get install -y libssl3 ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
