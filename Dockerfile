@@ -1,44 +1,28 @@
-# Base stage with dependencies and cargo-chef
-FROM rust:latest AS base
+FROM rust:latest as builder
+
 RUN apt-get update && apt-get install -y clang libssl-dev ffmpeg cmake
-RUN cargo install cargo-chef --locked
 
-# Planner stage - generates recipe.json
-FROM base AS planner
-WORKDIR /app
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-# Builder stage - builds dependencies then source
-FROM base AS builder
-WORKDIR /app
-
-# Build dependencies first (cached unless Cargo.toml/Cargo.lock change)
-COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-
-# Copy source and build
+WORKDIR /usr/src/governosombra
 COPY Cargo.toml Cargo.lock ./
-COPY src/ ./src/
-COPY templates/ ./templates/
 COPY transcripts/ ./transcripts/
+COPY templates/ ./templates/
 COPY episodes/ ./episodes/
-RUN cargo build --release
-
-# Download model
+COPY src/ ./src/
 COPY download-ggml-model.sh ./download-ggml-model.sh
+
+RUN cargo build --release
 RUN ./download-ggml-model.sh base
 
-# Runtime stage - same debian as rust:latest uses
-FROM debian:trixie-slim AS runtime
-RUN apt-get update && apt-get install -y libssl3 ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
+# # Use a minimal image as the base
+# FROM debian:buster-slim
 
-WORKDIR /app
-COPY --from=builder /app/target/release/app ./app
-COPY --from=builder /app/ggml-base.bin ./ggml-base.bin
-COPY --from=builder /app/templates ./templates
-COPY --from=builder /app/transcripts ./transcripts
-COPY --from=builder /app/episodes ./episodes
+# # Copy the app from the previous image
+# COPY --from=builder /usr/src/governosombra/target/release/app /usr/local/bin/app
+# COPY --from=builder /usr/src/governosombra/ggml-base.bin /usr/local/bin/ggml-base.bin
 
+# Expose the port that the app listens on
 EXPOSE 8080
-CMD ["./app"]
+
+# CMD ["app"]
+
+CMD ["./target/release/app"]
