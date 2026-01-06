@@ -1,2 +1,4 @@
 /target
 other/
+.envrc
+ggml-base.bin

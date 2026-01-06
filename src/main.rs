@@ -33,8 +33,17 @@ async fn hello(templ: web::Data<Tera>) -> impl Responder {
 async fn episode_pages(path: web::Path<i32>, templ: web::Data<Tera>) -> impl Responder {
     let episode_id = path.into_inner();
     let episodes = process::get_episodes().await;
-    let episode = episodes.iter().find(|e| e.number == episode_id).unwrap();
-    let transcript = process::get_transcript_for(&episode).await.unwrap();
+    let episode = match episodes.iter().find(|e| e.number == episode_id) {
+        Some(ep) => ep,
+        None => return HttpResponse::NotFound().body("Episode not found"),
+    };
+
+    let transcript = match process::get_transcript_for(&episode).await {
+        Ok(t) => t,
+        Err(_) => {
+            return HttpResponse::Ok().body("Volta mais tarde amigo(a).");
+        }
+    };
 
     let snippets: Vec<Snippet> = transcript
         .lines()
@@ -53,6 +62,18 @@ async fn episode_pages(path: web::Path<i32>, templ: web::Data<Tera>) -> impl Res
     let s = templ.render("episode.html", &context).unwrap();
 
     HttpResponse::Ok().body(s)
+}
+
+#[get("/process")]
+async fn trigger_process() -> impl Responder {
+    let allow = std::env::var("ALLOW_PROCESS").unwrap_or_default();
+    if allow != "1" {
+        return HttpResponse::NotFound().finish();
+    }
+    tokio::task::spawn_blocking(|| {
+        process::main();
+    });
+    HttpResponse::Ok().body("Processing started")
 }
 
 #[get("/livros")]
@@ -115,6 +136,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(tera))
             .service(hello)
             .service(episode_pages)
+            .service(trigger_process)
             .service(books)
     })
     .bind(("0.0.0.0", 8080))?

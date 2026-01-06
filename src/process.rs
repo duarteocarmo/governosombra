@@ -15,7 +15,7 @@ use std::io::Cursor;
 use std::io::Write;
 use std::process::Command;
 use tokio;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 #[allow(dead_code)]
 const CONCURRENT_REQUESTS: usize = 30;
@@ -150,7 +150,7 @@ fn format_time(seconds: i64) -> String {
 }
 
 /// Loads a context and model, processes an audio file, and prints the resulting transcript to stdout.
-fn get_transcript(episode: &Episode) -> Result<(), &'static str> {
+fn get_transcript(episode: &Episode) -> Result<(), Box<dyn std::error::Error>> {
     if std::path::Path::new(&episode.transcript_location).exists() {
         println!(
             "Transcript already exists for {}",
@@ -159,12 +159,11 @@ fn get_transcript(episode: &Episode) -> Result<(), &'static str> {
         return Ok(());
     }
     // Load a context and model.
-    let mut ctx = WhisperContext::new("ggml-base.bin").expect("failed to load model");
+    let ctx = WhisperContext::new_with_params("ggml-base.bin", WhisperContextParameters::default())
+        .expect("failed to load model");
 
     // Create a params object for running the model.
-    // Currently, only the Greedy sampling strategy is implemented, with BeamSearch as a WIP.
-    // The number of past samples to consider defaults to 0.
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 0 });
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
     params.set_n_threads(4);
     params.set_language(Some("pt"));
@@ -174,7 +173,7 @@ fn get_transcript(episode: &Episode) -> Result<(), &'static str> {
     params.set_print_timestamps(true);
 
     // Open the audio file.
-    let mut reader = hound::WavReader::open(&episode.file_location).expect("failed to open file");
+    let reader = hound::WavReader::open(&episode.file_location).expect("failed to open file");
     #[allow(unused_variables)]
     let hound::WavSpec {
         channels,
@@ -184,16 +183,14 @@ fn get_transcript(episode: &Episode) -> Result<(), &'static str> {
     } = reader.spec();
 
     // Convert the audio to floating point samples.
-    let mut audio = whisper_rs::convert_integer_to_float_audio(
-        &reader
-            .samples::<i16>()
-            .map(|s| s.expect("invalid sample"))
-            .collect::<Vec<_>>(),
-    );
+    let samples: Vec<i16> = reader
+        .into_samples::<i16>()
+        .map(|s| s.expect("invalid sample"))
+        .collect();
+    let mut audio = vec![0.0f32; samples.len()];
+    whisper_rs::convert_integer_to_float_audio(&samples, &mut audio)?;
 
     // Convert audio to 16KHz mono f32 samples, as required by the model.
-    // These utilities are provided for convenience, but can be replaced with custom conversion logic.
-    // SIMD variants of these functions are also available on nightly Rust (see the docs).
     if channels == 2 {
         audio = whisper_rs::convert_stereo_to_mono_audio(&audio)?;
     } else if channels != 1 {
@@ -204,32 +201,34 @@ fn get_transcript(episode: &Episode) -> Result<(), &'static str> {
         panic!("sample rate must be 16KHz");
     }
 
-    // Run the model.
-    ctx.full(params, &audio[..]).expect("failed to run model");
+    // Create state and run the model.
+    let mut state = ctx.create_state().expect("failed to create state");
+    state.full(params, &audio[..]).expect("failed to run model");
 
     // Create a file to write the transcript to.
     let mut file = File::create(&episode.transcript_location).expect("failed to create file");
 
     // Iterate through the segments of the transcript.
-    let num_segments = ctx.full_n_segments();
+    let num_segments = state.full_n_segments();
     for i in 0..num_segments {
-        let segment = match ctx.full_get_segment_text(i) {
-            Ok(segment) => segment,
-            Err(_) => {
+        let segment = match state.get_segment(i) {
+            Some(seg) => seg,
+            None => {
                 println!("Failed to get segment {}", i);
                 continue;
             }
         };
 
-        let start_timestamp = ctx.full_get_segment_t0(i);
-        let end_timestamp = ctx.full_get_segment_t1(i);
+        let text = segment.to_str_lossy().unwrap_or_default();
+        let start_timestamp = segment.start_timestamp();
+        let end_timestamp = segment.end_timestamp();
 
         let start_timestamp_formatted = format_time(start_timestamp);
         let end_timestamp_formatted = format_time(end_timestamp);
 
         let formatted_string = format!(
             "[{} - {}]: {}\n",
-            start_timestamp_formatted, end_timestamp_formatted, segment
+            start_timestamp_formatted, end_timestamp_formatted, text
         );
 
         file.write_all(formatted_string.as_bytes())
@@ -511,10 +510,22 @@ pub async fn main() {
     let transcribed_episodes = get_transcribed_episodes(&_s3_client).await;
     // let processed_episodes = get_processed_episodes(&_s3_client).await;
 
+    let mut transcribed_count = 0;
+    const MAX_TRANSCRIPTIONS: usize = 4;
+
     for episode in episodes.iter() {
         if transcribed_episodes.contains(&episode.number) {
             continue;
         }
+
+        if transcribed_count >= MAX_TRANSCRIPTIONS {
+            println!(
+                "Reached max transcriptions limit ({}), stopping",
+                MAX_TRANSCRIPTIONS
+            );
+            break;
+        }
+
         println!("Episode {} not processed yet", episode.number);
 
         download_episode(&episode).await;
@@ -538,6 +549,8 @@ pub async fn main() {
 
         std::fs::remove_file(&episode.transcript_location).expect("failed to delete file");
         println!("Deleted file {}", episode.transcript_location);
+
+        transcribed_count += 1;
     }
 
     let episodes_with_books = get_episodes_with_books(&_s3_client).await;
@@ -546,13 +559,18 @@ pub async fn main() {
         episodes_with_books.len()
     );
 
+    let transcribed_episodes = get_transcribed_episodes(&_s3_client).await;
+
     let mut processed_episode_numbers = Vec::new();
     let mut all_books = Vec::new();
 
     let episodes_to_process = {
         let mut unprocessed = episodes
             .iter()
-            .filter(|ep| !episodes_with_books.contains(&ep.number))
+            .filter(|ep| {
+                !episodes_with_books.contains(&ep.number)
+                    && transcribed_episodes.contains(&ep.number)
+            })
             .collect::<Vec<_>>();
         unprocessed.sort_by_key(|ep| -ep.number); // Negative to sort in descending order
         unprocessed.into_iter().take(10)
