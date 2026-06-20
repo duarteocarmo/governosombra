@@ -5,7 +5,6 @@ use aws_sdk_s3::Client as S3Client;
 use chrono::{DateTime, Utc};
 use feed_rs::{model::Feed, parser};
 use futures::{stream, StreamExt};
-use hound;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -14,7 +13,6 @@ use std::fs::File;
 use std::io::Cursor;
 use std::io::Write;
 use std::process::Command;
-use tokio;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 #[allow(dead_code)]
@@ -52,7 +50,7 @@ async fn fetch_rss_feed() -> Result<Feed, Box<dyn std::error::Error>> {
     let resp = reqwest::get(RSS_FEED_LOCATION).await?.text().await?;
     let feed = parser::parse(resp.as_bytes()).unwrap();
 
-    return Ok(feed);
+    Ok(feed)
 }
 
 async fn download_episode(episode: &Episode) {
@@ -81,7 +79,7 @@ async fn download_episode(episode: &Episode) {
 }
 
 #[allow(dead_code)]
-async fn download_episodes_from(list_of_episodes: &Vec<Episode>) {
+async fn download_episodes_from(list_of_episodes: &[Episode]) {
     let client = Client::new();
 
     let episodes_to_download = list_of_episodes
@@ -528,7 +526,7 @@ pub async fn main() {
 
         println!("Episode {} not processed yet", episode.number);
 
-        download_episode(&episode).await;
+        download_episode(episode).await;
         println!("Downloaded episode {}", episode.number);
 
         let _parsing = get_transcript(episode);
@@ -577,7 +575,7 @@ pub async fn main() {
     };
 
     for episode in episodes_to_process {
-        let books = get_list_of_books_from(&episode).await.unwrap();
+        let books = get_list_of_books_from(episode).await.unwrap();
         all_books.extend(books.clone());
         processed_episode_numbers.push(episode.number);
         println!("Books found in episode {}: {:?}", episode.number, books);

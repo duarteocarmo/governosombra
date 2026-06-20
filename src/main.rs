@@ -38,7 +38,7 @@ async fn episode_pages(path: web::Path<i32>, templ: web::Data<Tera>) -> impl Res
         None => return HttpResponse::NotFound().body("Episode not found"),
     };
 
-    let transcript = match process::get_transcript_for(&episode).await {
+    let transcript = match process::get_transcript_for(episode).await {
         Ok(t) => t,
         Err(_) => {
             return HttpResponse::Ok().body("Volta mais tarde amigo(a).");
@@ -82,7 +82,7 @@ async fn books(templ: web::Data<Tera>) -> impl Responder {
     let mut books = get_all_books(&s3_client).await.unwrap();
 
     // Sort books by episode number in descending order (most recent first)
-    books.sort_by(|a, b| b.episode_number.cmp(&a.episode_number));
+    books.sort_by_key(|b| std::cmp::Reverse(b.episode_number));
 
     let mut context = Context::new();
     context.insert("books", &books);
