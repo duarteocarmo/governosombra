@@ -1,3 +1,4 @@
+use actix_files::Files;
 use actix_web::middleware::Logger;
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 mod process;
@@ -92,8 +93,8 @@ async fn books(templ: web::Data<Tera>) -> impl Responder {
 }
 
 fn on_cron(name: &str) {
-    println!("{}: Updating episodes!", name);
     process::main();
+    println!("{}: Updated episodes", name);
 }
 
 #[actix_web::main]
@@ -120,10 +121,11 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_BACKTRACE", "1");
 
     // Updater
-    let mut cron = CronJob::new("Test Cron", on_cron);
-    cron.minutes("40");
+    let mut cron = CronJob::new("Daily Processing", on_cron);
+    cron.hours("8");
+    cron.minutes("0");
     cron.seconds("0");
-    cron.offset(0);
+    cron.offset(60 * 60);
     CronJob::start_job_threaded(cron);
 
     HttpServer::new(|| {
@@ -134,6 +136,10 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::new("%a %{User-Agent}i"))
             .wrap(sentry_actix::Sentry::new())
             .app_data(web::Data::new(tera))
+            .service(
+                Files::new("/static", concat!(env!("CARGO_MANIFEST_DIR"), "/static"))
+                    .show_files_listing(),
+            )
             .service(hello)
             .service(episode_pages)
             .service(trigger_process)

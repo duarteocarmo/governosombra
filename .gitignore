@@ -2,3 +2,4 @@
 other/
 .envrc
 ggml-base.bin
+/.DS_Store

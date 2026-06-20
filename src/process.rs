@@ -2,7 +2,7 @@ use anyhow::Result;
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::config::Builder as S3Builder;
 use aws_sdk_s3::Client as S3Client;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use feed_rs::{model::Feed, parser};
 use futures::{stream, StreamExt};
 use reqwest::Client;
@@ -21,6 +21,9 @@ const RSS_FEED_LOCATION: &str = "https://www.omnycontent.com/d/playlist/8c0a4104
 const AUDIO_FILE_FOLDER: &str = "episodes/";
 const TRANSCRIPT_FOLDER: &str = "transcripts/";
 const BOOKS_JSON_PATH: &str = "books.json";
+const TRANSCRIPTION_MODEL_PATH: &str = "ggml-base.bin";
+const DAILY_TRANSCRIPTION_MARKER_PREFIX: &str = "daily-transcriptions";
+const CET_OFFSET_SECONDS: i32 = 60 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Episode {
@@ -157,8 +160,11 @@ fn get_transcript(episode: &Episode) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     // Load a context and model.
-    let ctx = WhisperContext::new_with_params("ggml-base.bin", WhisperContextParameters::default())
-        .expect("failed to load model");
+    let ctx = WhisperContext::new_with_params(
+        TRANSCRIPTION_MODEL_PATH,
+        WhisperContextParameters::default(),
+    )
+    .expect("failed to load model");
 
     // Create a params object for running the model.
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
@@ -321,6 +327,34 @@ async fn get_transcribed_episodes(s3_client: &S3Client) -> Vec<i32> {
             key.split('/').nth(1)?.split('.').next()?.parse().ok()
         })
         .collect()
+}
+
+fn daily_transcription_marker_key() -> String {
+    let cet = FixedOffset::east_opt(CET_OFFSET_SECONDS).unwrap();
+    let today = Utc::now().with_timezone(&cet).format("%Y-%m-%d");
+    format!("{}/{}.txt", DAILY_TRANSCRIPTION_MARKER_PREFIX, today)
+}
+
+async fn has_transcribed_today(s3_client: &S3Client) -> bool {
+    s3_client
+        .head_object()
+        .bucket("governosombra")
+        .key(daily_transcription_marker_key())
+        .send()
+        .await
+        .is_ok()
+}
+
+async fn mark_transcribed_today(s3_client: &S3Client, episode: &Episode) -> Result<()> {
+    s3_client
+        .put_object()
+        .bucket("governosombra")
+        .key(daily_transcription_marker_key())
+        .body(episode.number.to_string().into_bytes().into())
+        .send()
+        .await?;
+
+    Ok(())
 }
 
 pub async fn get_transcript_for(episode: &Episode) -> Result<String, Box<dyn std::error::Error>> {
@@ -509,46 +543,55 @@ pub async fn main() {
     // let processed_episodes = get_processed_episodes(&_s3_client).await;
 
     let mut transcribed_count = 0;
-    const MAX_TRANSCRIPTIONS: usize = 4;
+    const MAX_TRANSCRIPTIONS: usize = 1;
 
-    for episode in episodes.iter() {
-        if transcribed_episodes.contains(&episode.number) {
-            continue;
+    if has_transcribed_today(&_s3_client).await {
+        println!("Already transcribed one episode today, skipping transcription");
+    } else {
+        for episode in episodes.iter() {
+            if transcribed_episodes.contains(&episode.number) {
+                continue;
+            }
+
+            if transcribed_count >= MAX_TRANSCRIPTIONS {
+                println!(
+                    "Reached max transcriptions limit ({}), stopping",
+                    MAX_TRANSCRIPTIONS
+                );
+                break;
+            }
+
+            println!("Episode {} not processed yet", episode.number);
+
+            download_episode(episode).await;
+            println!("Downloaded episode {}", episode.number);
+
+            let _parsing = get_transcript(episode);
+            println!("Got transcript in {}", episode.transcript_location);
+
+            _s3_client
+                .put_object()
+                .bucket("governosombra")
+                .key(format!("transcripts/{:03}.txt", episode.number))
+                .body(std::fs::read(&episode.transcript_location).unwrap().into())
+                .send()
+                .await
+                .expect("failed to upload transcript");
+            println!("Uploaded transcript for episode {}", episode.number);
+
+            mark_transcribed_today(&_s3_client, episode)
+                .await
+                .expect("failed to mark daily transcription");
+            println!("Marked daily transcription for episode {}", episode.number);
+
+            std::fs::remove_file(&episode.file_location).expect("failed to delete file");
+            println!("Deleted file {}", episode.file_location);
+
+            std::fs::remove_file(&episode.transcript_location).expect("failed to delete file");
+            println!("Deleted file {}", episode.transcript_location);
+
+            transcribed_count += 1;
         }
-
-        if transcribed_count >= MAX_TRANSCRIPTIONS {
-            println!(
-                "Reached max transcriptions limit ({}), stopping",
-                MAX_TRANSCRIPTIONS
-            );
-            break;
-        }
-
-        println!("Episode {} not processed yet", episode.number);
-
-        download_episode(episode).await;
-        println!("Downloaded episode {}", episode.number);
-
-        let _parsing = get_transcript(episode);
-        println!("Got transcript in {}", episode.transcript_location);
-
-        _s3_client
-            .put_object()
-            .bucket("governosombra")
-            .key(format!("transcripts/{:03}.txt", episode.number))
-            .body(std::fs::read(&episode.transcript_location).unwrap().into())
-            .send()
-            .await
-            .expect("failed to upload transcript");
-        println!("Uploaded transcript for episode {}", episode.number);
-
-        std::fs::remove_file(&episode.file_location).expect("failed to delete file");
-        println!("Deleted file {}", episode.file_location);
-
-        std::fs::remove_file(&episode.transcript_location).expect("failed to delete file");
-        println!("Deleted file {}", episode.transcript_location);
-
-        transcribed_count += 1;
     }
 
     let episodes_with_books = get_episodes_with_books(&_s3_client).await;
