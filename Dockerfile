@@ -34,4 +34,6 @@ COPY static/ ./static/
 RUN mkdir -p episodes transcripts
 
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl --fail --silent http://localhost:8080/healthz > /dev/null || exit 1
 CMD ["./app"]
