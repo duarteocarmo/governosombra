@@ -226,13 +226,13 @@ async fn main() -> io::Result<()> {
 
     let runtime = tokio::runtime::Handle::current();
     let scheduled_state = state.clone();
-    let mut cron = CronJob::new("Daily Processing", move |_: &str| {
+    let mut cron = CronJob::new("Twice Daily Processing", move |_: &str| {
         let state = scheduled_state.clone();
         runtime.spawn(async move {
             try_start_processing(state, "scheduled");
         });
     });
-    cron.hours("8");
+    cron.hours("8,20");
     cron.minutes("0");
     cron.seconds("0");
     cron.offset(60 * 60);
@@ -278,5 +278,14 @@ mod tests {
         assert!(constant_time_equal(b"correct", b"correct"));
         assert!(!constant_time_equal(b"correct", b"wrong__"));
         assert!(!constant_time_equal(b"correct", b"short"));
+    }
+
+    #[test]
+    fn twice_daily_cron_expression_is_valid() {
+        let mut cron = CronJob::new("test", |_: &str| {});
+        cron.hours("8,20");
+        cron.minutes("0");
+        cron.seconds("0");
+        cron.get_schedule();
     }
 }

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::{config::Builder as S3Builder, Client as S3Client};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
 use feed_rs::{model::Feed, parser};
 use log::{info, warn};
 use reqwest::Client;
@@ -243,13 +243,25 @@ async fn get_transcribed_episodes(c: &S3Client) -> Result<Vec<i32>> {
         .filter_map(|o| o.key?.split('/').nth(1)?.split('.').next()?.parse().ok())
         .collect())
 }
-fn marker() -> String {
-    let cet_now = Utc::now() + ChronoDuration::hours(1);
-    format!("daily-transcriptions/{}.txt", cet_now.format("%Y-%m-%d"))
+struct ProcessingWindow {
+    marker: String,
+    legacy_marker: Option<String>,
 }
 
-async fn has_transcribed_today(c: &S3Client) -> Result<bool> {
-    match c.head_object().bucket(BUCKET).key(marker()).send().await {
+fn processing_window(now: DateTime<Utc>) -> ProcessingWindow {
+    let local_now = now + ChronoDuration::hours(1);
+    let date = local_now.format("%Y-%m-%d");
+    let is_morning = local_now.hour() < 12;
+    let slot = if is_morning { "morning" } else { "evening" };
+
+    ProcessingWindow {
+        marker: format!("daily-transcriptions/{date}-{slot}.txt"),
+        legacy_marker: is_morning.then(|| format!("daily-transcriptions/{date}.txt")),
+    }
+}
+
+async fn marker_exists(c: &S3Client, key: &str) -> Result<bool> {
+    match c.head_object().bucket(BUCKET).key(key).send().await {
         Ok(_) => Ok(true),
         Err(error)
             if error
@@ -261,10 +273,25 @@ async fn has_transcribed_today(c: &S3Client) -> Result<bool> {
         Err(error) => Err(error.into()),
     }
 }
-async fn mark_transcribed_today(c: &S3Client, e: &Episode) -> Result<()> {
+
+async fn has_transcribed_in_window(c: &S3Client, window: &ProcessingWindow) -> Result<bool> {
+    if marker_exists(c, &window.marker).await? {
+        return Ok(true);
+    }
+    match window.legacy_marker.as_deref() {
+        Some(legacy_marker) => marker_exists(c, legacy_marker).await,
+        None => Ok(false),
+    }
+}
+
+async fn mark_transcribed_in_window(
+    c: &S3Client,
+    e: &Episode,
+    window: &ProcessingWindow,
+) -> Result<()> {
     c.put_object()
         .bucket(BUCKET)
-        .key(marker())
+        .key(&window.marker)
         .body(e.number.to_string().into_bytes().into())
         .send()
         .await?;
@@ -460,8 +487,9 @@ pub async fn run(c: &S3Client) -> Result<()> {
     info!("Found {} episodes in the feed", episodes.len());
 
     let transcribed = get_transcribed_episodes(c).await?;
-    if has_transcribed_today(c).await? {
-        info!("A transcript has already been created today");
+    let processing_window = processing_window(Utc::now());
+    if has_transcribed_in_window(c, &processing_window).await? {
+        info!("A transcript has already been created in this processing window");
     } else if let Some(episode) = episodes
         .iter()
         .find(|episode| !transcribed.contains(&episode.number))
@@ -478,7 +506,7 @@ pub async fn run(c: &S3Client) -> Result<()> {
             .body(tokio::fs::read(&episode.transcript_location).await?.into())
             .send()
             .await?;
-        mark_transcribed_today(c, episode).await?;
+        mark_transcribed_in_window(c, episode, &processing_window).await?;
 
         for path in [&episode.file_location, &episode.transcript_location] {
             if let Err(error) = tokio::fs::remove_file(path).await {
@@ -568,5 +596,33 @@ mod tests {
         )
         .expect("valid fixture");
         assert!(parse_openrouter_books(response, 483).is_err());
+    }
+
+    #[test]
+    fn uses_separate_morning_and_evening_markers() {
+        let morning = processing_window(
+            DateTime::parse_from_rfc3339("2026-08-29T07:00:00Z")
+                .expect("valid time")
+                .with_timezone(&Utc),
+        );
+        let evening = processing_window(
+            DateTime::parse_from_rfc3339("2026-08-29T19:00:00Z")
+                .expect("valid time")
+                .with_timezone(&Utc),
+        );
+
+        assert_eq!(
+            morning.marker,
+            "daily-transcriptions/2026-08-29-morning.txt"
+        );
+        assert_eq!(
+            morning.legacy_marker.as_deref(),
+            Some("daily-transcriptions/2026-08-29.txt")
+        );
+        assert_eq!(
+            evening.marker,
+            "daily-transcriptions/2026-08-29-evening.txt"
+        );
+        assert!(evening.legacy_marker.is_none());
     }
 }
