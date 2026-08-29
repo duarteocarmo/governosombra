@@ -1,29 +1,47 @@
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_s3::config::Builder as S3Builder;
-use aws_sdk_s3::Client as S3Client;
-use chrono::{DateTime, FixedOffset, Utc};
+use aws_sdk_s3::{config::Builder as S3Builder, Client as S3Client};
+use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
 use feed_rs::{model::Feed, parser};
-use futures::{stream, StreamExt};
+use log::{info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::env;
-use std::fs::File;
-use std::io::Cursor;
-use std::io::Write;
-use std::process::Command;
+use serde_json::json;
+use std::{
+    env,
+    fs::File,
+    io::Write,
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
+use tokio::sync::Mutex;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-#[allow(dead_code)]
-const CONCURRENT_REQUESTS: usize = 30;
-const RSS_FEED_LOCATION: &str = "https://www.omnycontent.com/d/playlist/8c0a4104-a688-4e57-91fd-ad7b00d5dddd/c2325e96-d6ad-4206-b72b-ad8e00e5f4fe/bbc8a8c5-8da7-46ef-843f-ad8e00e5f515/podcast.rss";
-const AUDIO_FILE_FOLDER: &str = "episodes/";
-const TRANSCRIPT_FOLDER: &str = "transcripts/";
-const BOOKS_JSON_PATH: &str = "books.json";
-const TRANSCRIPTION_MODEL_PATH: &str = "ggml-base.bin";
-const DAILY_TRANSCRIPTION_MARKER_PREFIX: &str = "daily-transcriptions";
-const CET_OFFSET_SECONDS: i32 = 60 * 60;
+const FEED: &str = "https://www.omnycontent.com/d/playlist/8c0a4104-a688-4e57-91fd-ad7b00d5dddd/c2325e96-d6ad-4206-b72b-ad8e00e5f4fe/bbc8a8c5-8da7-46ef-843f-ad8e00e5f515/podcast.rss";
+const BUCKET: &str = "governosombra";
+const OPENROUTER_MODEL: &str = "openai/gpt-5.6-luna";
+const RSS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const RSS_TIMEOUT: Duration = Duration::from_secs(30);
+const AUDIO_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const OPENROUTER_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+
+static HTTP: OnceLock<Client> = OnceLock::new();
+static CACHE: OnceLock<Mutex<Option<CachedEpisodes>>> = OnceLock::new();
+
+struct CachedEpisodes {
+    fetched_at: Instant,
+    episodes: Vec<Episode>,
+}
+
+fn http() -> &'static Client {
+    HTTP.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build()
+            .expect("the shared HTTP client configuration is valid")
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Episode {
@@ -35,601 +53,576 @@ pub struct Episode {
     pub number: i32,
     pub date: DateTime<Utc>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Book {
     pub title: String,
     pub author: String,
     pub episode_number: i32,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BooksDatabase {
     pub processed_episodes: Vec<i32>,
     pub books: Vec<Book>,
 }
 
-async fn fetch_rss_feed() -> Result<Feed, Box<dyn std::error::Error>> {
-    let resp = reqwest::get(RSS_FEED_LOCATION).await?.text().await?;
-    let feed = parser::parse(resp.as_bytes()).unwrap();
-
-    Ok(feed)
+async fn fetch_rss_feed() -> Result<Feed> {
+    let bytes = http()
+        .get(FEED)
+        .timeout(RSS_TIMEOUT)
+        .send()
+        .await
+        .context("request RSS feed")?
+        .error_for_status()
+        .context("RSS status")?
+        .bytes()
+        .await
+        .context("read RSS feed")?;
+    parser::parse(bytes.as_ref()).context("parse RSS feed")
 }
 
-async fn download_episode(episode: &Episode) {
-    let client = Client::new();
-    let response = client.get(&episode.url).send().await;
-    let bytes = response.unwrap().bytes().await.unwrap();
-
-    let mp3_file = episode.file_location.replace(".wav", ".mp3");
-    let mut file = std::fs::File::create(&mp3_file).unwrap();
-    let mut content = Cursor::new(bytes);
-    std::io::copy(&mut content, &mut file).unwrap();
-    println!("Downloaded {}", mp3_file);
-
-    let _output = Command::new("ffmpeg")
-        .arg("-i")
-        .arg(&mp3_file)
-        .arg("-ar")
-        .arg("16000")
-        .arg(&episode.file_location)
-        .output()
-        .expect("failed to execute process");
-    println!("Converted into {}", episode.file_location);
-
-    std::fs::remove_file(&mp3_file).unwrap();
-    println!("Removed {}", mp3_file);
-}
-
-#[allow(dead_code)]
-async fn download_episodes_from(list_of_episodes: &[Episode]) {
-    let client = Client::new();
-
-    let episodes_to_download = list_of_episodes
-        .iter()
-        .filter(|episode| !std::path::Path::new(&episode.file_location).exists())
-        .cloned()
-        .collect::<Vec<Episode>>();
-
-    println!(
-        "{} episodes to download from {} total.",
-        episodes_to_download.len(),
-        list_of_episodes.len()
-    );
-
-    let bodies = stream::iter(episodes_to_download)
-        .map(|episode| {
-            let client = &client;
-
-            async move {
-                let response = client.get(&episode.url).send().await?;
-                response.bytes().await.map(|bytes| (episode, bytes))
+pub async fn get_episodes() -> Result<Vec<Episode>> {
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().await;
+    if let Some(cached) = guard.as_ref() {
+        if cached.fetched_at.elapsed() < RSS_CACHE_TTL {
+            return Ok(cached.episodes.clone());
+        }
+    }
+    let stale = guard.as_ref().map(|cached| cached.episodes.clone());
+    let feed = match fetch_rss_feed().await {
+        Ok(f) => f,
+        Err(error) => {
+            if let Some(value) = stale {
+                warn!("RSS refresh failed, serving cached episodes: {error:#}");
+                return Ok(value);
             }
-        })
-        .buffer_unordered(CONCURRENT_REQUESTS);
+            return Err(error);
+        }
+    };
+    let mut episodes = Vec::new();
+    for entry in feed.entries {
+        let Some(media) = entry.media.first() else {
+            continue;
+        };
+        let Some(content) = media.content.first() else {
+            continue;
+        };
+        let Some(url) = content.url.as_ref() else {
+            continue;
+        };
+        let Some(title) = entry.title.as_ref() else {
+            continue;
+        };
+        let Some(date) = entry.published else {
+            continue;
+        };
+        let thumb = media
+            .thumbnails
+            .first()
+            .map(|t| t.image.uri.to_string())
+            .unwrap_or_default();
+        episodes.push(Episode {
+            url: url.to_string(),
+            title: title.content.clone(),
+            file_location: String::new(),
+            thumbnail_url: thumb,
+            transcript_location: String::new(),
+            number: 0,
+            date,
+        });
+    }
+    if episodes.is_empty() {
+        return Err(anyhow!("RSS feed contained no usable episodes"));
+    }
 
-    bodies
-        .for_each(|result| async move {
-            match result {
-                Ok((episode, bytes)) => {
-                    let mp3_file = episode.file_location.replace(".wav", ".mp3");
-                    let mut file = std::fs::File::create(&mp3_file).unwrap();
-                    let mut content = Cursor::new(bytes);
-                    std::io::copy(&mut content, &mut file).unwrap();
-                    println!("Downloaded {}", mp3_file);
-
-                    let _output = Command::new("ffmpeg")
-                        .arg("-i")
-                        .arg(&mp3_file)
-                        .arg("-ar")
-                        .arg("16000")
-                        .arg(&episode.file_location)
-                        .output()
-                        .expect("failed to execute process");
-                    println!("Converted into {}", episode.file_location);
-
-                    std::fs::remove_file(&mp3_file).unwrap();
-                    println!("Removed {}", mp3_file);
-                }
-                Err(e) => {
-                    eprint!("Error: {}", e);
-                }
-            }
-        })
-        .await;
+    episodes.sort_by_key(|e| e.date);
+    for (i, e) in episodes.iter_mut().enumerate() {
+        e.number = i as i32 + 1;
+        e.file_location = format!("episodes/{:03}.wav", e.number);
+        e.transcript_location = format!("transcripts/{:03}.txt", e.number);
+    }
+    *guard = Some(CachedEpisodes {
+        fetched_at: Instant::now(),
+        episodes: episodes.clone(),
+    });
+    Ok(episodes)
 }
 
-fn format_time(seconds: i64) -> String {
-    let seconds = seconds as f32;
-    let hours = seconds / 3600.0;
-    let minutes = (seconds % 3600.0) / 60.0;
-    let seconds = seconds % 60.0;
-    format!(
-        "{:02}:{:02}:{:02}",
-        hours as u32, minutes as u32, seconds as u32
-    )
+async fn download_episode(episode: &Episode) -> Result<()> {
+    let mp3 = episode.file_location.replace(".wav", ".mp3");
+    let mut response = http()
+        .get(&episode.url)
+        .timeout(AUDIO_TIMEOUT)
+        .send()
+        .await
+        .context("download episode")?
+        .error_for_status()?;
+    let mut file = tokio::fs::File::create(&mp3).await?;
+    while let Some(chunk) = response.chunk().await? {
+        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
+    }
+    let status = tokio::process::Command::new("ffmpeg")
+        .args(["-y", "-i", &mp3, "-ar", "16000", &episode.file_location])
+        .status()
+        .await
+        .context("run ffmpeg")?;
+    if !status.success() {
+        return Err(anyhow!("ffmpeg failed: {status}"));
+    }
+    tokio::fs::remove_file(mp3).await?;
+    Ok(())
 }
 
-/// Loads a context and model, processes an audio file, and prints the resulting transcript to stdout.
-fn get_transcript(episode: &Episode) -> Result<(), Box<dyn std::error::Error>> {
-    if std::path::Path::new(&episode.transcript_location).exists() {
-        println!(
-            "Transcript already exists for {}",
-            episode.transcript_location
-        );
+fn format_time(s: i64) -> String {
+    format!("{:02}:{:02}:{:02}", (s / 3600), (s % 3600) / 60, s % 60)
+}
+fn get_transcript(e: &Episode) -> Result<()> {
+    if std::path::Path::new(&e.transcript_location).exists() {
         return Ok(());
     }
-    // Load a context and model.
-    let ctx = WhisperContext::new_with_params(
-        TRANSCRIPTION_MODEL_PATH,
-        WhisperContextParameters::default(),
-    )
-    .expect("failed to load model");
-
-    // Create a params object for running the model.
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-
-    params.set_n_threads(4);
-    params.set_language(Some("pt"));
-    params.set_print_special(false);
-    params.set_print_progress(true);
-    params.set_print_realtime(true);
-    params.set_print_timestamps(true);
-
-    // Open the audio file.
-    let reader = hound::WavReader::open(&episode.file_location).expect("failed to open file");
-    #[allow(unused_variables)]
-    let hound::WavSpec {
-        channels,
-        sample_rate,
-        bits_per_sample,
-        ..
-    } = reader.spec();
-
-    // Convert the audio to floating point samples.
+    let ctx = WhisperContext::new_with_params("ggml-base.bin", WhisperContextParameters::default())
+        .context("load whisper model")?;
+    let mut p = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    p.set_n_threads(4);
+    p.set_language(Some("pt"));
+    p.set_print_special(false);
+    p.set_print_progress(true);
+    p.set_print_realtime(true);
+    p.set_print_timestamps(true);
+    let reader = hound::WavReader::open(&e.file_location).context("open wav")?;
+    let spec = reader.spec();
     let samples: Vec<i16> = reader
-        .into_samples::<i16>()
-        .map(|s| s.expect("invalid sample"))
-        .collect();
-    let mut audio = vec![0.0f32; samples.len()];
+        .into_samples()
+        .collect::<std::result::Result<_, _>>()?;
+    let mut audio = vec![0f32; samples.len()];
     whisper_rs::convert_integer_to_float_audio(&samples, &mut audio)?;
-
-    // Convert audio to 16KHz mono f32 samples, as required by the model.
-    if channels == 2 {
-        audio = whisper_rs::convert_stereo_to_mono_audio(&audio)?;
-    } else if channels != 1 {
-        panic!(">2 channels unsupported");
+    if spec.channels == 2 {
+        audio = whisper_rs::convert_stereo_to_mono_audio(&audio)?
+    } else if spec.channels != 1 {
+        return Err(anyhow!("unsupported channel count"));
     }
-
-    if sample_rate != 16000 {
-        panic!("sample rate must be 16KHz");
+    if spec.sample_rate != 16000 {
+        return Err(anyhow!("sample rate must be 16KHz"));
     }
-
-    // Create state and run the model.
-    let mut state = ctx.create_state().expect("failed to create state");
-    state.full(params, &audio[..]).expect("failed to run model");
-
-    // Create a file to write the transcript to.
-    let mut file = File::create(&episode.transcript_location).expect("failed to create file");
-
-    // Iterate through the segments of the transcript.
-    let num_segments = state.full_n_segments();
-    for i in 0..num_segments {
-        let segment = match state.get_segment(i) {
-            Some(seg) => seg,
-            None => {
-                println!("Failed to get segment {}", i);
-                continue;
-            }
-        };
-
-        let text = segment.to_str_lossy().unwrap_or_default();
-        let start_timestamp = segment.start_timestamp();
-        let end_timestamp = segment.end_timestamp();
-
-        let start_timestamp_formatted = format_time(start_timestamp);
-        let end_timestamp_formatted = format_time(end_timestamp);
-
-        let formatted_string = format!(
-            "[{} - {}]: {}\n",
-            start_timestamp_formatted, end_timestamp_formatted, text
-        );
-
-        file.write_all(formatted_string.as_bytes())
-            .expect("failed to write to file");
+    let mut state = ctx.create_state().context("create whisper state")?;
+    state.full(p, &audio).context("transcribe audio")?;
+    let mut file = File::create(&e.transcript_location)?;
+    for i in 0..state.full_n_segments() {
+        if let Some(seg) = state.get_segment(i) {
+            writeln!(
+                file,
+                "[{} - {}]: {}",
+                format_time(seg.start_timestamp()),
+                format_time(seg.end_timestamp()),
+                seg.to_str_lossy().context("decode transcript segment")?
+            )?;
+        }
     }
     Ok(())
 }
 
-pub async fn get_episodes() -> Vec<Episode> {
-    let rss_feed = fetch_rss_feed().await.unwrap();
-    let mut list_of_episode_urls = Vec::new();
-    let mut list_of_episodes = Vec::new();
-
-    for entry in rss_feed.entries.clone() {
-        let media_content = entry.media.first().unwrap().content.first().unwrap();
-        let url = media_content.url.clone().unwrap();
-        let url_string = url.as_str();
-        let title = entry.title.unwrap().content;
-        let date = entry.published.unwrap();
-        let thumbnail_url = entry
-            .media
-            .first()
-            .unwrap()
-            .thumbnails
-            .first()
-            .unwrap()
-            .image
-            .uri
-            .clone();
-
-        let episode = Episode {
-            url: url_string.to_string(),
-            title: title.to_string(),
-            file_location: "".to_string(),
-            transcript_location: "".to_string(),
-            thumbnail_url: thumbnail_url.to_string(),
-            date,
-            number: 0,
-        };
-
-        list_of_episodes.push(episode);
-        list_of_episode_urls.push(url_string.to_string());
-    }
-
-    list_of_episodes.sort_by_key(|episode| episode.date);
-
-    for (i, episode) in list_of_episodes.iter_mut().enumerate() {
-        episode.number = i as i32 + 1;
-        let episode_file_name = format!("{:03}", episode.number) + ".wav";
-        let episode_transcript_name = format!("{:03}", episode.number) + ".txt";
-
-        episode.file_location = AUDIO_FILE_FOLDER.to_owned() + &episode_file_name;
-        episode.transcript_location = TRANSCRIPT_FOLDER.to_owned() + &episode_transcript_name;
-    }
-
-    list_of_episodes
+pub async fn get_s3_client() -> Result<S3Client> {
+    let endpoint = env::var("CLOUDFLARE_ENDPOINT").context("CLOUDFLARE_ENDPOINT")?;
+    let region = RegionProviderChain::default_provider().or_else("us-east-1");
+    let config = aws_config::from_env().region(region).load().await;
+    Ok(S3Client::from_conf(
+        S3Builder::from(&config).endpoint_url(endpoint).build(),
+    ))
 }
-
-pub async fn get_s3_client() -> Result<S3Client, aws_sdk_s3::Error> {
-    // Retrieve Cloudflare endpoint from an environment variable
-    let cloudflare_endpoint = env::var("CLOUDFLARE_ENDPOINT")
-        .expect("CLOUDFLARE_ENDPOINT environment variable is not set");
-
-    let region_provider = RegionProviderChain::default_provider().or_else("us-east-1");
-    let config = aws_config::from_env().region(region_provider).load().await;
-
-    let s3_config = S3Builder::from(&config)
-        .endpoint_url(cloudflare_endpoint)
-        .build();
-
-    let client = S3Client::from_conf(s3_config);
-
-    Ok(client)
-}
-
-async fn get_transcribed_episodes(s3_client: &S3Client) -> Vec<i32> {
-    s3_client
+async fn get_transcribed_episodes(c: &S3Client) -> Result<Vec<i32>> {
+    let out = c
         .list_objects_v2()
-        .bucket("governosombra")
+        .bucket(BUCKET)
         .prefix("transcripts")
         .send()
-        .await
-        .unwrap()
+        .await?;
+    Ok(out
         .contents
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|obj| {
-            let key = obj.key?;
-            if !key.contains(".txt") {
-                return None;
+        .filter_map(|o| o.key?.split('/').nth(1)?.split('.').next()?.parse().ok())
+        .collect())
+}
+struct ProcessingWindow {
+    marker: String,
+    legacy_marker: Option<String>,
+}
+
+fn processing_window(now: DateTime<Utc>) -> ProcessingWindow {
+    let local_now = now + ChronoDuration::hours(1);
+    let date = local_now.format("%Y-%m-%d");
+    let is_morning = local_now.hour() < 12;
+    let slot = if is_morning { "morning" } else { "evening" };
+
+    ProcessingWindow {
+        marker: format!("daily-transcriptions/{date}-{slot}.txt"),
+        legacy_marker: is_morning.then(|| format!("daily-transcriptions/{date}.txt")),
+    }
+}
+
+async fn marker_exists(c: &S3Client, key: &str) -> Result<bool> {
+    match c.head_object().bucket(BUCKET).key(key).send().await {
+        Ok(_) => Ok(true),
+        Err(error)
+            if error
+                .as_service_error()
+                .is_some_and(|service_error| service_error.is_not_found()) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn has_transcribed_in_window(c: &S3Client, window: &ProcessingWindow) -> Result<bool> {
+    if marker_exists(c, &window.marker).await? {
+        return Ok(true);
+    }
+    match window.legacy_marker.as_deref() {
+        Some(legacy_marker) => marker_exists(c, legacy_marker).await,
+        None => Ok(false),
+    }
+}
+
+async fn mark_transcribed_in_window(
+    c: &S3Client,
+    e: &Episode,
+    window: &ProcessingWindow,
+) -> Result<()> {
+    c.put_object()
+        .bucket(BUCKET)
+        .key(&window.marker)
+        .body(e.number.to_string().into_bytes().into())
+        .send()
+        .await?;
+    Ok(())
+}
+pub async fn get_transcript_for(c: &S3Client, e: &Episode) -> Result<String> {
+    let data = c
+        .get_object()
+        .bucket(BUCKET)
+        .key(format!("transcripts/{:03}.txt", e.number))
+        .send()
+        .await?
+        .body
+        .collect()
+        .await?;
+    Ok(String::from_utf8(data.to_vec())?)
+}
+
+#[derive(Debug, Deserialize)]
+struct BookData {
+    books: Vec<BookFields>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BookFields {
+    title: String,
+    author: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterResponse {
+    choices: Vec<Choice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Choice {
+    message: Message,
+}
+
+#[derive(Debug, Deserialize)]
+struct Message {
+    content: Option<String>,
+}
+
+fn parse_openrouter_books(response: OpenRouterResponse, episode_number: i32) -> Result<Vec<Book>> {
+    let content = response
+        .choices
+        .first()
+        .and_then(|choice| choice.message.content.as_deref())
+        .ok_or_else(|| anyhow!("OpenRouter response has no choices or message content"))?;
+    let data: BookData = serde_json::from_str(content).context("parse OpenRouter book JSON")?;
+
+    data.books
+        .into_iter()
+        .map(|book| {
+            let title = book.title.trim();
+            let author = book.author.trim();
+            if title.is_empty() || author.is_empty() {
+                return Err(anyhow!(
+                    "OpenRouter returned a book with an empty title or author"
+                ));
             }
-            key.split('/').nth(1)?.split('.').next()?.parse().ok()
+            Ok(Book {
+                title: title.to_owned(),
+                author: author.to_owned(),
+                episode_number,
+            })
         })
         .collect()
 }
 
-fn daily_transcription_marker_key() -> String {
-    let cet = FixedOffset::east_opt(CET_OFFSET_SECONDS).unwrap();
-    let today = Utc::now().with_timezone(&cet).format("%Y-%m-%d");
-    format!("{}/{}.txt", DAILY_TRANSCRIPTION_MARKER_PREFIX, today)
-}
+async fn get_list_of_books_from(c: &S3Client, e: &Episode) -> Result<Vec<Book>> {
+    const EXTRACT_BOOKS_PROMPT: &str = "Extract every book mentioned in the podcast transcript. Return an empty books array when no books are mentioned. Do not invent titles or authors.";
 
-async fn has_transcribed_today(s3_client: &S3Client) -> bool {
-    s3_client
-        .head_object()
-        .bucket("governosombra")
-        .key(daily_transcription_marker_key())
-        .send()
-        .await
-        .is_ok()
-}
-
-async fn mark_transcribed_today(s3_client: &S3Client, episode: &Episode) -> Result<()> {
-    s3_client
-        .put_object()
-        .bucket("governosombra")
-        .key(daily_transcription_marker_key())
-        .body(episode.number.to_string().into_bytes().into())
-        .send()
-        .await?;
-
-    Ok(())
-}
-
-pub async fn get_transcript_for(episode: &Episode) -> Result<String, Box<dyn std::error::Error>> {
-    let _s3_client = get_s3_client().await.unwrap();
-    let resp = _s3_client
-        .get_object()
-        .bucket("governosombra")
-        .key(format!("transcripts/{:03}.txt", episode.number))
-        .send()
-        .await?;
-
-    let data = resp.body.collect().await?;
-    let string_data = String::from_utf8(data.to_vec())?;
-
-    Ok(string_data)
-}
-
-async fn get_list_of_books_from(episode: &Episode) -> Result<Vec<Book>> {
-    let transcript = get_transcript_for(episode).await.unwrap();
-    let api_key = std::env::var("OPENAI_API_KEY")?;
-    let client = reqwest::Client::new();
-
-    const EXTRACT_BOOKS_PROMPT: &str = r#"
-* You are a helpful assistant that excels at extracting book information from text. 
-* The user will send you a transcript of a podcast episode.
-* You must silently analyze the text and provide a list of books mentioned in the episode.
-* Not all episode mention books, therefore you must return an empty list if no books are found.
-* Return your response in a JSON that can be read with serde_json::from_str.
-* DO NOT include any ```json ``` or ``` ``` in your response.
-* You must use the following structure:
-{
-    "books": [
-        {
-            "title": "The Name of the Wind",
-            "author": "Patrick Rothfuss"
-        },
-        {
-            "title": "The Lord of the Rings",
-            "author": "J.R.R. Tolkien"
-        }
-    ]
-}
-"#;
-
-    let response = client
-        .post("https://api.openai.com/v1/chat/completions")
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .json(&json!({
-            "model": "gpt-4o-mini",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": EXTRACT_BOOKS_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": transcript
+    let transcript = get_transcript_for(c, e).await?;
+    let key = env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY is not set")?;
+    let body = json!({
+        "model": OPENROUTER_MODEL,
+        "messages": [
+            {"role": "system", "content": EXTRACT_BOOKS_PROMPT},
+            {"role": "user", "content": transcript}
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "book_mentions",
+                "strict": true,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "books": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "author": {"type": "string"}
+                                },
+                                "required": ["title", "author"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "required": ["books"],
+                    "additionalProperties": false
                 }
-            ]
-        }))
-        .send()
-        .await?;
-
-    let response_json: Value = response.json().await?;
-    let response_string = response_json["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("Failed to get response")
-        .to_string();
-    let response_struct: Value = serde_json::from_str(&response_string)?;
-
-    let books: Vec<Book> = response_struct["books"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|book| {
-            let title = book["title"].as_str().unwrap().to_string();
-            let author = book["author"].as_str().unwrap().to_string();
-            let episode_number = episode.number;
-            Book {
-                title,
-                author,
-                episode_number,
             }
-        })
-        .collect();
-
-    Ok(books)
-}
-
-async fn update_books_list(
-    s3_client: &S3Client,
-    new_books: &Vec<Book>,
-    processed_episode_numbers: &[i32],
-) -> Result<(), Box<dyn std::error::Error>> {
-    // First, try to get existing database
-    let mut database = match s3_client
-        .get_object()
-        .bucket("governosombra")
-        .key(BOOKS_JSON_PATH)
+        }
+    });
+    let response = http()
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .timeout(OPENROUTER_TIMEOUT)
+        .bearer_auth(key)
+        .header("HTTP-Referer", "https://governosombra.duarteocarmo.com")
+        .header("X-OpenRouter-Title", "Governo Sombra Transcripts")
+        .json(&body)
         .send()
         .await
-    {
-        Ok(resp) => {
-            let data = resp.body.collect().await?;
-            serde_json::from_slice(&data.to_vec())?
+        .context("request book extraction from OpenRouter")?
+        .error_for_status()
+        .context("OpenRouter returned an error status")?;
+    let response: OpenRouterResponse = response
+        .json()
+        .await
+        .context("decode OpenRouter response")?;
+    parse_openrouter_books(response, e.number)
+}
+
+async fn update_books_list(c: &S3Client, new: &[Book], processed: &[i32]) -> Result<()> {
+    let mut db = match c.get_object().bucket(BUCKET).key("books.json").send().await {
+        Ok(response) => serde_json::from_slice(&response.body.collect().await?.to_vec())?,
+        Err(error)
+            if error
+                .as_service_error()
+                .is_some_and(|service_error| service_error.is_no_such_key()) =>
+        {
+            BooksDatabase {
+                processed_episodes: vec![],
+                books: vec![],
+            }
         }
-        Err(_) => BooksDatabase {
-            processed_episodes: Vec::new(),
-            books: Vec::new(),
-        },
+        Err(error) => return Err(error.into()),
     };
-
-    // Add new processed episodes
-    for &episode_num in processed_episode_numbers {
-        if !database.processed_episodes.contains(&episode_num) {
-            database.processed_episodes.push(episode_num);
+    for n in processed {
+        if !db.processed_episodes.contains(n) {
+            db.processed_episodes.push(*n)
         }
     }
-
-    // Add new books
-    for new_book in new_books {
-        if !database.books.iter().any(|book| {
-            book.title == new_book.title
-                && book.author == new_book.author
-                && book.episode_number == new_book.episode_number
+    for b in new {
+        if !db.books.iter().any(|x| {
+            x.title == b.title && x.author == b.author && x.episode_number == b.episode_number
         }) {
-            database.books.push(new_book.clone());
+            db.books.push(b.clone())
         }
     }
-
-    // Upload updated database to S3
-    let database_json = serde_json::to_string(&database)?;
-    s3_client
-        .put_object()
-        .bucket("governosombra")
-        .key(BOOKS_JSON_PATH)
-        .body(database_json.into_bytes().into())
+    c.put_object()
+        .bucket(BUCKET)
+        .key("books.json")
+        .body(serde_json::to_vec(&db)?.into())
         .send()
         .await?;
+    Ok(())
+}
+async fn get_episodes_with_books(c: &S3Client) -> Result<Vec<i32>> {
+    let response = match c.get_object().bucket(BUCKET).key("books.json").send().await {
+        Ok(response) => response,
+        Err(error)
+            if error
+                .as_service_error()
+                .is_some_and(|service_error| service_error.is_no_such_key()) =>
+        {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    Ok(
+        serde_json::from_slice::<BooksDatabase>(&response.body.collect().await?.to_vec())?
+            .processed_episodes,
+    )
+}
+pub async fn get_all_books(c: &S3Client) -> Result<Vec<Book>> {
+    let r = c
+        .get_object()
+        .bucket(BUCKET)
+        .key("books.json")
+        .send()
+        .await?;
+    Ok(serde_json::from_slice::<BooksDatabase>(&r.body.collect().await?.to_vec())?.books)
+}
 
+pub async fn run(c: &S3Client) -> Result<()> {
+    let episodes = get_episodes().await?;
+    info!("Found {} episodes in the feed", episodes.len());
+
+    let transcribed = get_transcribed_episodes(c).await?;
+    let processing_window = processing_window(Utc::now());
+    if has_transcribed_in_window(c, &processing_window).await? {
+        info!("A transcript has already been created in this processing window");
+    } else if let Some(episode) = episodes
+        .iter()
+        .find(|episode| !transcribed.contains(&episode.number))
+    {
+        info!("Transcribing episode {}", episode.number);
+        download_episode(episode).await?;
+        let episode_for_transcription = episode.clone();
+        tokio::task::spawn_blocking(move || get_transcript(&episode_for_transcription))
+            .await
+            .context("join transcription task")??;
+        c.put_object()
+            .bucket(BUCKET)
+            .key(format!("transcripts/{:03}.txt", episode.number))
+            .body(tokio::fs::read(&episode.transcript_location).await?.into())
+            .send()
+            .await?;
+        mark_transcribed_in_window(c, episode, &processing_window).await?;
+
+        for path in [&episode.file_location, &episode.transcript_location] {
+            if let Err(error) = tokio::fs::remove_file(path).await {
+                warn!("Could not remove temporary file {path}: {error}");
+            }
+        }
+        info!("Uploaded transcript for episode {}", episode.number);
+    } else {
+        info!("All episodes have transcripts");
+    }
+
+    let episodes_with_books = get_episodes_with_books(c).await?;
+    let transcribed = get_transcribed_episodes(c).await?;
+    let mut episodes_to_process = episodes
+        .iter()
+        .filter(|episode| {
+            transcribed.contains(&episode.number) && !episodes_with_books.contains(&episode.number)
+        })
+        .collect::<Vec<_>>();
+    episodes_to_process.sort_by_key(|episode| std::cmp::Reverse(episode.number));
+
+    let mut books = vec![];
+    let mut processed = vec![];
+    for episode in episodes_to_process.into_iter().take(10) {
+        match get_list_of_books_from(c, episode).await {
+            Ok(found_books) => {
+                info!(
+                    "Found {} books in episode {}",
+                    found_books.len(),
+                    episode.number
+                );
+                books.extend(found_books);
+                processed.push(episode.number);
+            }
+            Err(error) => {
+                warn!(
+                    "Book extraction failed for episode {}: {error:#}",
+                    episode.number
+                )
+            }
+        }
+    }
+
+    if !processed.is_empty() {
+        update_books_list(c, &books, &processed).await?;
+        info!("Updated books for {} episodes", processed.len());
+    }
     Ok(())
 }
 
-async fn get_episodes_with_books(s3_client: &S3Client) -> Vec<i32> {
-    match s3_client
-        .get_object()
-        .bucket("governosombra")
-        .key(BOOKS_JSON_PATH)
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let data = resp.body.collect().await.unwrap();
-            let database: BooksDatabase = serde_json::from_slice(&data.to_vec()).unwrap();
-            database.processed_episodes
-        }
-        Err(_) => Vec::new(),
-    }
-}
-
-pub async fn get_all_books(s3_client: &S3Client) -> Result<Vec<Book>, Box<dyn std::error::Error>> {
-    match s3_client
-        .get_object()
-        .bucket("governosombra")
-        .key(BOOKS_JSON_PATH)
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let data = resp.body.collect().await?;
-            let database: BooksDatabase = serde_json::from_slice(&data.to_vec())?;
-            Ok(database.books)
-        }
-        Err(e) => Err(Box::new(e)),
-    }
-}
-
+#[allow(dead_code)]
 #[tokio::main]
-pub async fn main() {
-    let episodes = get_episodes().await;
-    println!("Number of episodes in feed: {}", episodes.len());
+async fn main() -> Result<()> {
+    let c = get_s3_client().await?;
+    run(&c).await
+}
 
-    let _s3_client = get_s3_client().await.unwrap();
-    let transcribed_episodes = get_transcribed_episodes(&_s3_client).await;
-    // let processed_episodes = get_processed_episodes(&_s3_client).await;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let mut transcribed_count = 0;
-    const MAX_TRANSCRIPTIONS: usize = 1;
+    #[test]
+    fn parses_openrouter_books() {
+        let response: OpenRouterResponse = serde_json::from_str(
+            r#"{"choices":[{"message":{"content":"{\"books\":[{\"title\":\"Dune\",\"author\":\"Frank Herbert\"}]}"}}]}"#,
+        )
+        .expect("valid fixture");
 
-    if has_transcribed_today(&_s3_client).await {
-        println!("Already transcribed one episode today, skipping transcription");
-    } else {
-        for episode in episodes.iter() {
-            if transcribed_episodes.contains(&episode.number) {
-                continue;
-            }
-
-            if transcribed_count >= MAX_TRANSCRIPTIONS {
-                println!(
-                    "Reached max transcriptions limit ({}), stopping",
-                    MAX_TRANSCRIPTIONS
-                );
-                break;
-            }
-
-            println!("Episode {} not processed yet", episode.number);
-
-            download_episode(episode).await;
-            println!("Downloaded episode {}", episode.number);
-
-            let _parsing = get_transcript(episode);
-            println!("Got transcript in {}", episode.transcript_location);
-
-            _s3_client
-                .put_object()
-                .bucket("governosombra")
-                .key(format!("transcripts/{:03}.txt", episode.number))
-                .body(std::fs::read(&episode.transcript_location).unwrap().into())
-                .send()
-                .await
-                .expect("failed to upload transcript");
-            println!("Uploaded transcript for episode {}", episode.number);
-
-            mark_transcribed_today(&_s3_client, episode)
-                .await
-                .expect("failed to mark daily transcription");
-            println!("Marked daily transcription for episode {}", episode.number);
-
-            std::fs::remove_file(&episode.file_location).expect("failed to delete file");
-            println!("Deleted file {}", episode.file_location);
-
-            std::fs::remove_file(&episode.transcript_location).expect("failed to delete file");
-            println!("Deleted file {}", episode.transcript_location);
-
-            transcribed_count += 1;
-        }
+        let books = parse_openrouter_books(response, 483).expect("books should parse");
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].title, "Dune");
+        assert_eq!(books[0].author, "Frank Herbert");
+        assert_eq!(books[0].episode_number, 483);
     }
 
-    let episodes_with_books = get_episodes_with_books(&_s3_client).await;
-    println!(
-        "Total episodes parsed for books: {}",
-        episodes_with_books.len()
-    );
-
-    let transcribed_episodes = get_transcribed_episodes(&_s3_client).await;
-
-    let mut processed_episode_numbers = Vec::new();
-    let mut all_books = Vec::new();
-
-    let episodes_to_process = {
-        let mut unprocessed = episodes
-            .iter()
-            .filter(|ep| {
-                !episodes_with_books.contains(&ep.number)
-                    && transcribed_episodes.contains(&ep.number)
-            })
-            .collect::<Vec<_>>();
-        unprocessed.sort_by_key(|ep| -ep.number); // Negative to sort in descending order
-        unprocessed.into_iter().take(10)
-    };
-
-    for episode in episodes_to_process {
-        let books = get_list_of_books_from(episode).await.unwrap();
-        all_books.extend(books.clone());
-        processed_episode_numbers.push(episode.number);
-        println!("Books found in episode {}: {:?}", episode.number, books);
+    #[test]
+    fn rejects_missing_openrouter_content() {
+        let response: OpenRouterResponse =
+            serde_json::from_str(r#"{"choices":[]}"#).expect("valid fixture");
+        assert!(parse_openrouter_books(response, 483).is_err());
     }
 
-    // Update books list in S3
-    if let Err(e) = update_books_list(&_s3_client, &all_books, &processed_episode_numbers).await {
-        eprintln!("Failed to update books list: {}", e);
+    #[test]
+    fn rejects_invalid_book_fields() {
+        let response: OpenRouterResponse = serde_json::from_str(
+            r#"{"choices":[{"message":{"content":"{\"books\":[{\"title\":\"\",\"author\":\"Unknown\"}]}"}}]}"#,
+        )
+        .expect("valid fixture");
+        assert!(parse_openrouter_books(response, 483).is_err());
     }
-    println!("Updated books database in S3");
 
-    let total_books = get_all_books(&_s3_client).await.unwrap();
-    println!("Total books in database: {}", total_books.len());
+    #[test]
+    fn uses_separate_morning_and_evening_markers() {
+        let morning = processing_window(
+            DateTime::parse_from_rfc3339("2026-08-29T07:00:00Z")
+                .expect("valid time")
+                .with_timezone(&Utc),
+        );
+        let evening = processing_window(
+            DateTime::parse_from_rfc3339("2026-08-29T19:00:00Z")
+                .expect("valid time")
+                .with_timezone(&Utc),
+        );
+
+        assert_eq!(
+            morning.marker,
+            "daily-transcriptions/2026-08-29-morning.txt"
+        );
+        assert_eq!(
+            morning.legacy_marker.as_deref(),
+            Some("daily-transcriptions/2026-08-29.txt")
+        );
+        assert_eq!(
+            evening.marker,
+            "daily-transcriptions/2026-08-29-evening.txt"
+        );
+        assert!(evening.legacy_marker.is_none());
+    }
 }

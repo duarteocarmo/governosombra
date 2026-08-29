@@ -11,7 +11,7 @@ prepare: # Prepare the app
 
 .PHONY: run
 run: # Run the app
-	ALLOW_PROCESS=1 RUST_BACKTRACE=full ./target/release/app
+	RUST_BACKTRACE=full ./target/release/app
 
 .PHONY: format
 format: # Format the app

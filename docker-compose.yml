@@ -3,6 +3,7 @@ version: "3.8"
 services:
   parlabot:
     build: .
+    init: true
     restart: always
     ports:
       - "8080:8080"
